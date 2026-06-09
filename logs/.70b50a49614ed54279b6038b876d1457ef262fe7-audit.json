@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "C:\\Users\\Oluebere\\Documents\\inventory-backend\\inventory-app\\logs\\.70b50a49614ed54279b6038b876d1457ef262fe7-audit.json",
+    "files": [
+        {
+            "date": 1780780838881,
+            "name": "C:\\Users\\Oluebere\\Documents\\inventory-backend\\inventory-app\\logs\\app-2026-06-06.log",
+            "hash": "843c5e5efe2f1f9555c1a1f73fbb047cb6f59bf0fb15eacebf2f5c477d694297"
+        }
+    ],
+    "hashType": "sha256"
+}

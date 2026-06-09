@@ -1,0 +1,20 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "C:\\Users\\Oluebere\\Documents\\Carlmundo Inventory & Stocks App\\inventory-backend\\logs\\.1b7028c64d7d32690d63e5baef6ddf2934ee0e1b-audit.json",
+    "files": [
+        {
+            "date": 1780841578612,
+            "name": "C:\\Users\\Oluebere\\Documents\\Carlmundo Inventory & Stocks App\\inventory-backend\\logs\\app-2026-06-07.log",
+            "hash": "20dd51cd198258705bc8b294fe3c3953ead6d55ff6cc7c25339c18134ffe38ea"
+        },
+        {
+            "date": 1780987111072,
+            "name": "C:\\Users\\Oluebere\\Documents\\Carlmundo Inventory & Stocks App\\inventory-backend\\logs\\app-2026-06-09.log",
+            "hash": "17a695f7e438121d209f1260c58d4b5b2dbaab3455ddd749c715741ee4891db8"
+        }
+    ],
+    "hashType": "sha256"
+}
