@@ -11,13 +11,11 @@ const { ROLES, ROLE_DEFAULT_PERMISSIONS } = require('../config/constants');
 exports.submitRequest = asyncHandler(async (req, res) => {
   const { name, email, password, phone, requestedRole, reason } = req.body;
 
-  // Check if email already has an account
   const userExists = await User.findOne({ email });
   if (userExists) {
     throw new AppError('An account with this email already exists.', 409);
   }
 
-  // Check if there is already a pending request for this email
   const existingRequest = await RegistrationRequest.findOne({
     email,
     status: 'pending',
@@ -29,17 +27,16 @@ exports.submitRequest = asyncHandler(async (req, res) => {
     );
   }
 
-  // Create the request — password is hashed by the pre-save hook
+  // password is hashed by the RegistrationRequest pre-save hook
   const request = await RegistrationRequest.create({
     name,
     email,
-    password, // stored hashed, used when admin approves
+    password,
     phone,
     requestedRole: requestedRole || ROLES.STAFF,
     reason,
   });
 
-  // Notify all admins and managers
   const admins = await User.find({
     role:     { $in: [ROLES.ADMIN, ROLES.MANAGER] },
     isActive: true,
@@ -58,8 +55,7 @@ exports.submitRequest = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     success: true,
-    message:
-      'Registration request submitted. You will be notified once reviewed.',
+    message: 'Registration request submitted. You will be notified once reviewed.',
     data: {
       id:     request._id,
       name:   request.name,
@@ -89,9 +85,7 @@ exports.getRequests = asyncHandler(async (req, res) => {
     { path: 'reviewedBy', select: 'name email' }
   );
 
-  const pendingCount = await RegistrationRequest.countDocuments({
-    status: 'pending',
-  });
+  const pendingCount = await RegistrationRequest.countDocuments({ status: 'pending' });
 
   res.json({ success: true, ...result, pendingCount });
 });
@@ -110,7 +104,7 @@ exports.getRequestById = asyncHandler(async (req, res) => {
 exports.approveRequest = asyncHandler(async (req, res) => {
   const { role, permissions } = req.body;
 
-  // Fetch request WITH password field (it has select: false)
+  // Must select +password since it has select: false on the model
   const request = await RegistrationRequest.findById(req.params.id).select('+password');
   if (!request) throw new AppError('Registration request not found.', 404);
   if (request.status !== 'pending') {
@@ -126,50 +120,27 @@ exports.approveRequest = asyncHandler(async (req, res) => {
   const finalRole        = role || request.requestedRole;
   const finalPermissions = permissions || ROLE_DEFAULT_PERMISSIONS[finalRole] || [];
 
-  // Create the user using the hashed password from the request
-  // We bypass the User pre-save hook for password hashing by using
-  // insertOne with the already-hashed value, OR we can just pass the
-  // plain password and let User model hash it again — but that would
-  // double-hash. Instead we set the hash directly via a raw update after create.
-  //
-  // Cleanest approach: create user without password, then set the
-  // already-hashed password directly on the document.
-  const user = new User({
-    name:        request.name,
-    email:       request.email,
-    password:    'placeholder', // will be replaced below
-    role:        finalRole,
-    permissions: finalPermissions,
-    isActive:    true,
-    createdBy:   req.user._id,
-  });
-
-  // Bypass the pre-save hash by directly assigning the already-hashed password
-  // and marking it as NOT modified so the pre-save hook skips it
+  // Use collection.insertOne to bypass the User pre-save bcrypt hook
+  // so the already-hashed password is not double-hashed
   await User.collection.insertOne({
-    name:        request.name,
-    email:       request.email,
-    password:    request.password, // already bcrypt-hashed from the request
-    role:        finalRole,
-    permissions: finalPermissions,
+    name:               request.name,
+    email:              request.email,
+    password:           request.password, // already bcrypt-hashed
+    role:               finalRole,
+    permissions:        finalPermissions,
     restrictedFeatures: [],
-    isActive:    true,
-    isDeleted:   false,
-    loginAttempts: 0,
-    createdBy:   req.user._id,
-    createdAt:   new Date(),
-    updatedAt:   new Date(),
+    isActive:           true,
+    isDeleted:          false,
+    loginAttempts:      0,
+    createdBy:          req.user._id,
+    createdAt:          new Date(),
+    updatedAt:          new Date(),
   });
 
-  // Fetch the created user to get the _id
+  // Get the created user document
   const createdUser = await User.findOne({ email: request.email });
 
-  // Update the request
-  request.status      = 'approved';
-  request.reviewedBy  = req.user._id;
-  request.reviewedAt  = new Date();
-  request.createdUser = createdUser._id;
-  // Clear the stored password from the request now that account is created
+  // Update the request: set approved fields and remove the stored password
   await RegistrationRequest.collection.updateOne(
     { _id: request._id },
     {
@@ -179,7 +150,7 @@ exports.approveRequest = asyncHandler(async (req, res) => {
         reviewedAt:  new Date(),
         createdUser: createdUser._id,
       },
-      $unset: { password: '' }, // remove hashed password — no longer needed
+      $unset: { password: '' }, // delete hashed password — no longer needed
     }
   );
 
@@ -190,6 +161,7 @@ exports.approveRequest = asyncHandler(async (req, res) => {
     meta:     { email: request.email, role: finalRole },
   });
 
+  // No temporaryPassword in response — user uses the password they set
   res.json({
     success: true,
     message: `Request approved. Account created for ${request.email}.`,
@@ -200,7 +172,6 @@ exports.approveRequest = asyncHandler(async (req, res) => {
         email: createdUser.email,
         role:  createdUser.role,
       },
-      note: 'The user can now log in with the password they set during registration.',
     },
   });
 });
