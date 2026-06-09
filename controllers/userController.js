@@ -10,7 +10,11 @@ const { ROLE_DEFAULT_PERMISSIONS } = require('../config/constants');
 exports.getUsers = asyncHandler(async (req, res) => {
   const { page, limit, sort, search, role, isActive } = req.query;
 
-  const filter = { isDeleted: false };
+  const filter = { 
+    isDeleted: false,
+    role: { $ne: 'admin' } // Exclude admin users
+  };
+  
   if (role) filter.role = role;
   if (isActive !== undefined) filter.isActive = isActive === 'true';
   if (search) {
@@ -29,7 +33,6 @@ exports.getUsers = asyncHandler(async (req, res) => {
 
   res.json({ success: true, ...result });
 });
-
 // ─── Get Single User ───────────────────────────────────────────────────────
 exports.getUserById = asyncHandler(async (req, res) => {
   const user = await User.findOne({ _id: req.params.id, isDeleted: false })
