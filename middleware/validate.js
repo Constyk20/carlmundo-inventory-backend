@@ -173,13 +173,19 @@ const schemas = {
 
   // ─── Registration Request ─────────────────────────────────────────────
   submitRegistrationRequest: Joi.object({
-    name:          Joi.string().min(2).max(100).trim().required(),
-    email:         Joi.string().email().lowercase().required(),
-    phone:         Joi.string().trim().allow('', null),
-    requestedRole: Joi.string().valid('manager', 'production_manager', 'accountant', 'staff', 'viewer').default('staff'),
-    reason:        Joi.string().max(500).trim().allow('', null),
-  }),
-
+  name:          Joi.string().min(2).max(100).trim().required(),
+  email:         Joi.string().email().lowercase().required(),
+  password:      Joi.string()
+    .min(8)
+    .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/)
+    .message('Password must include uppercase, lowercase, number and special character')
+    .required(),
+  phone:         Joi.string().trim().allow('', null),
+  requestedRole: Joi.string()
+    .valid('manager', 'production_manager', 'accountant', 'staff', 'viewer')
+    .default('staff'),
+  reason:        Joi.string().max(500).trim().allow('', null),
+}),
   approveRegistrationRequest: Joi.object({
     role:        Joi.string().valid('manager', 'production_manager', 'accountant', 'staff', 'viewer'),
     permissions: Joi.array().items(Joi.string()),
