@@ -14,7 +14,7 @@ exports.getMaterials = asyncHandler(async (req, res) => {
   if (category)   filter.category   = category;
   if (isActive   !== undefined) filter.isActive   = isActive   === 'true';
   if (isFinished !== undefined) filter.isFinished = isFinished === 'true';
-  if (lowStock   === 'true') {
+  if (lowStock === 'true') {
     filter.$expr = { $lte: ['$currentQuantity', '$lowStockThreshold'] };
   }
   if (search) {
@@ -71,7 +71,8 @@ exports.getMaterialsByCategory = asyncHandler(async (req, res) => {
 exports.getMaterialById = asyncHandler(async (req, res) => {
   const material = await RawMaterial.findOne({
     _id: req.params.id, isDeleted: false,
-  }).populate('createdBy', 'name email')
+  })
+    .populate('createdBy',  'name email')
     .populate('finishedBy', 'name email');
 
   if (!material) throw new AppError('Material not found.', 404);
@@ -90,13 +91,17 @@ exports.createMaterial = asyncHandler(async (req, res) => {
     if (exists) throw new AppError('A material with this code already exists.', 409);
   }
 
+  const qty = currentQuantity || 0;
+
   const material = await RawMaterial.create({
     name, code, category, description, unit,
-    currentQuantity:   currentQuantity   || 0,
+    currentQuantity:   qty,
     lowStockThreshold: lowStockThreshold || 10,
     unitCost:          unitCost          || 0,
     supplier,
-    createdBy: req.user._id,
+    // Auto-finish if created with 0 stock
+    isFinished: qty === 0,
+    createdBy:  req.user._id,
   });
 
   if (material.currentQuantity > 0) {
@@ -135,8 +140,10 @@ exports.updateMaterial = asyncHandler(async (req, res) => {
     'unitCost', 'supplier', 'isActive', 'category',
   ];
 
-  if (req.body.unitCost !== undefined &&
-      req.body.unitCost !== material.unitCost) {
+  if (
+    req.body.unitCost !== undefined &&
+    req.body.unitCost !== material.unitCost
+  ) {
     material.priceHistory.push({
       price:     req.body.unitCost,
       changedBy: req.user._id,
@@ -194,8 +201,10 @@ exports.markAsFinished = asyncHandler(async (req, res) => {
   await material.save();
 
   await audit(req, {
-    action: 'update', entity: 'RawMaterial', entityId: material._id,
-    meta:   { action: 'mark_finished', note },
+    action:   'update',
+    entity:   'RawMaterial',
+    entityId: material._id,
+    meta:     { action: 'mark_finished', note },
   });
 
   res.json({
@@ -220,13 +229,15 @@ exports.unmarkFinished = asyncHandler(async (req, res) => {
   await material.save();
 
   await audit(req, {
-    action: 'update', entity: 'RawMaterial', entityId: material._id,
-    meta:   { action: 'unmark_finished' },
+    action:   'update',
+    entity:   'RawMaterial',
+    entityId: material._id,
+    meta:     { action: 'unmark_finished' },
   });
 
   res.json({
     success: true,
-    message: `"${material.name}" unmarked as finished.`,
+    message: `"${material.name}" is now active.`,
     data:    material,
   });
 });
@@ -265,7 +276,7 @@ exports.bulkMarkFinished = asyncHandler(async (req, res) => {
   });
 });
 
-// ─── BULK: Delete multiple materials ─────────────────────────────────────
+// ─── BULK: Delete multiple ────────────────────────────────────────────────
 exports.bulkDelete = asyncHandler(async (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
@@ -298,6 +309,11 @@ exports.bulkDelete = asyncHandler(async (req, res) => {
 });
 
 // ─── Adjust quantity ──────────────────────────────────────────────────────
+// KEY RULES:
+//  1. Any inbound movement (purchase / return / adjustment+) on a
+//     finished material automatically unmarks it as finished.
+//  2. When the resulting stock hits 0, the material is automatically
+//     marked as finished.
 exports.adjustMaterial = asyncHandler(async (req, res) => {
   const {
     type, quantity, unitCost, reference,
@@ -308,16 +324,23 @@ exports.adjustMaterial = asyncHandler(async (req, res) => {
     _id: req.params.id, isDeleted: false,
   });
   if (!material) throw new AppError('Material not found.', 404);
-  if (material.isFinished && type !== 'adjustment') {
-    throw new AppError(
-      'This material is marked as finished. Unmark it first to make changes.',
-      400
-    );
-  }
 
   const outbound = ['used_in_production', 'damage'];
+  const inbound  = ['purchase', 'return'];
   const absQty   = Math.abs(quantity);
 
+  // ── Rule 1: Restocking a finished material → auto-unfinish ────────────
+  const isRestocking = inbound.includes(type) ||
+    (type === 'adjustment' && quantity > 0);
+
+  if (material.isFinished && isRestocking) {
+    material.isFinished   = false;
+    material.finishedAt   = undefined;
+    material.finishedBy   = undefined;
+    material.finishedNote = undefined;
+  }
+
+  // ── Validate outbound stock ───────────────────────────────────────────
   if (outbound.includes(type) && material.currentQuantity < absQty) {
     throw new AppError(
       `Insufficient stock. Available: ${material.currentQuantity}, Requested: ${absQty}`,
@@ -326,10 +349,19 @@ exports.adjustMaterial = asyncHandler(async (req, res) => {
   }
 
   const before = material.currentQuantity;
+
   if (outbound.includes(type)) {
     material.currentQuantity -= absQty;
   } else {
     material.currentQuantity += absQty;
+  }
+
+  // ── Rule 2: Stock hits 0 → auto-finish ───────────────────────────────
+  if (material.currentQuantity === 0 && !material.isFinished) {
+    material.isFinished   = true;
+    material.finishedAt   = new Date();
+    material.finishedBy   = req.user._id;
+    material.finishedNote = `Auto-finished: stock reached 0 via ${type}`;
   }
 
   material.updatedBy = req.user._id;
@@ -353,13 +385,38 @@ exports.adjustMaterial = asyncHandler(async (req, res) => {
     action:   'update',
     entity:   'RawMaterial',
     entityId: material._id,
-    meta:     { type, quantity: outbound.includes(type) ? -absQty : absQty, before, after: material.currentQuantity },
+    meta: {
+      type,
+      quantity:   outbound.includes(type) ? -absQty : absQty,
+      before,
+      after:      material.currentQuantity,
+      autoAction: material.currentQuantity === 0
+        ? 'auto_finished'
+        : isRestocking && before === 0
+          ? 'auto_unfinished'
+          : null,
+    },
   });
+
+  // Build a meaningful response message
+  let message = 'Stock updated.';
+  if (material.currentQuantity === 0) {
+    message = `Stock reached 0 — "${material.name}" has been automatically marked as finished.`;
+  } else if (isRestocking && !material.isFinished && before === 0) {
+    message = `"${material.name}" restocked and automatically marked as active.`;
+  } else if (isRestocking && !material.isFinished) {
+    message = `"${material.name}" restocked and unmarked as finished.`;
+  }
 
   res.json({
     success: true,
-    message: 'Material quantity updated.',
-    data:    { material, movement },
+    message,
+    data: {
+      material,
+      movement,
+      autoFinished:   material.currentQuantity === 0,
+      autoUnfinished: isRestocking && !material.isFinished,
+    },
   });
 });
 
@@ -399,13 +456,16 @@ exports.getProductionSummary = asyncHandler(async (req, res) => {
       $expr: { $lte: ['$currentQuantity', '$lowStockThreshold'] },
     }),
 
-    RawMaterial.countDocuments({
-      isDeleted: false, isFinished: true,
-    }),
+    RawMaterial.countDocuments({ isDeleted: false, isFinished: true }),
 
     RawMaterial.aggregate([
       { $match: { isDeleted: false, isActive: true } },
-      { $group: { _id: null, total: { $sum: { $multiply: ['$currentQuantity', '$unitCost'] } } } },
+      {
+        $group: {
+          _id:   null,
+          total: { $sum: { $multiply: ['$currentQuantity', '$unitCost'] } },
+        },
+      },
     ]),
 
     MaterialMovement.find({ type: 'used_in_production' })
@@ -424,7 +484,11 @@ exports.getProductionSummary = asyncHandler(async (req, res) => {
           totalQty:      { $sum: '$currentQuantity' },
           totalValue:    { $sum: { $multiply: ['$currentQuantity', '$unitCost'] } },
           lowStockCount: {
-            $sum: { $cond: [{ $lte: ['$currentQuantity', '$lowStockThreshold'] }, 1, 0] },
+            $sum: {
+              $cond: [
+                { $lte: ['$currentQuantity', '$lowStockThreshold'] }, 1, 0,
+              ],
+            },
           },
         },
       },
