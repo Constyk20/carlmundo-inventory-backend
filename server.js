@@ -24,6 +24,7 @@ const excelRoutes = require('./routes/excelRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const priceRoutes = require('./routes/priceRoutes');
 const registrationRoutes = require('./routes/registrationRoutes');
+const productionRoutes = require('./routes/productionRoutes');
 
 // ─── App ───────────────────────────────────────────────────────────────────
 const app = express();
@@ -118,6 +119,7 @@ app.use('/api/excel', excelRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/prices', priceRoutes);
 app.use('/api/registration-requests', registrationRoutes);
+app.use('/api/production', productionRoutes);
 
 // ─── 404 → error handler ───────────────────────────────────────────────────
 app.use(notFound);

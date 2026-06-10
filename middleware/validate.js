@@ -105,6 +105,41 @@ const schemas = {
     notes: Joi.string(),
   }),
 
+  // ─── Raw Materials ────────────────────────────────────────────────────────
+createMaterial: Joi.object({
+  name:              Joi.string().trim().required(),
+  code:              Joi.string().uppercase().trim().allow('', null),
+  category:          Joi.string().valid(
+    'cake_box', 'cupcake_box', 'doughnut_box', 'popcorn_pack',
+    'pastry_box', 'gift_box', 'carrier_bag', 'other'
+  ).required(),
+  description:       Joi.string().trim().allow('', null),
+  unit:              Joi.string().valid(
+    'piece', 'pack', 'sheet', 'roll', 'kg', 'litre', 'metre'
+  ).default('piece'),
+  currentQuantity:   Joi.number().min(0).default(0),
+  lowStockThreshold: Joi.number().min(0).default(10),
+  unitCost:          Joi.number().min(0).default(0),
+  supplier: Joi.object({
+    name:         Joi.string().allow('', null),
+    contactPhone: Joi.string().allow('', null),
+    contactEmail: Joi.string().email().allow('', null),
+  }),
+  priceChangeReason: Joi.string().allow('', null),
+}),
+
+adjustMaterial: Joi.object({
+  type: Joi.string().valid(
+    'purchase', 'used_in_production', 'adjustment', 'damage', 'return'
+  ).required(),
+  quantity:      Joi.number().required(),
+  unitCost:      Joi.number().min(0),
+  reference:     Joi.string().allow('', null),
+  notes:         Joi.string().allow('', null),
+  relatedProduct: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).allow(null),
+  batchQuantity: Joi.number().min(1),
+}),
+
   // ─── Customer ────────────────────────────────────────────────────────────
   createCustomer: Joi.object({
     name: Joi.string().trim().required(),
