@@ -7,56 +7,44 @@ const {
   createMaterial,
   updateMaterial,
   deleteMaterial,
+  markAsFinished,
+  unmarkFinished,
+  bulkMarkFinished,
+  bulkDelete,
   adjustMaterial,
   getMaterialMovements,
   getProductionSummary,
 } = require('../controllers/productionController');
 const { protect }           = require('../middleware/auth');
 const { authorize }         = require('../middleware/rbac');
-const { ROLES }             = require('../config/constants');
 const { validate, schemas } = require('../middleware/validate');
+const { ROLES }             = require('../config/constants');
 
 router.use(protect);
 
-// Summary dashboard
-router.get('/summary', authorize([
-  ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER,
-]), getProductionSummary);
+const canView  = [ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER, ROLES.STAFF];
+const canWrite = [ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER];
+const canDelete = [ROLES.ADMIN, ROLES.MANAGER];
 
-// Grouped by category
-router.get('/by-category', authorize([
-  ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER, ROLES.STAFF,
-]), getMaterialsByCategory);
+router.get('/summary',     authorize(canView),  getProductionSummary);
+router.get('/by-category', authorize(canView),  getMaterialsByCategory);
+router.get('/',            authorize(canView),  getMaterials);
+router.get('/:id',         authorize(canView),  getMaterialById);
 
-// CRUD
-router.get('/', authorize([
-  ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER, ROLES.STAFF,
-]), getMaterials);
+router.post('/',           authorize(canWrite), validate(schemas.createMaterial), createMaterial);
+router.put('/:id',         authorize(canWrite), updateMaterial);
+router.delete('/:id',      authorize(canDelete), deleteMaterial);
 
-router.get('/:id', authorize([
-  ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER, ROLES.STAFF,
-]), getMaterialById);
+// Single finish / unfinish
+router.put('/:id/finish',   authorize(canWrite), markAsFinished);
+router.put('/:id/unfinish', authorize(canWrite), unmarkFinished);
 
-router.post('/', authorize([
-  ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER,
-]), validate(schemas.createMaterial), createMaterial);
+// Adjust stock
+router.post('/:id/adjust',    authorize(canWrite), validate(schemas.adjustMaterial), adjustMaterial);
+router.get('/:id/movements',  authorize(canWrite), getMaterialMovements);
 
-router.put('/:id', authorize([
-  ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER,
-]), updateMaterial);
-
-router.delete('/:id', authorize([
-  ROLES.ADMIN, ROLES.MANAGER,
-]), deleteMaterial);
-
-// Stock adjustments
-router.post('/:id/adjust', authorize([
-  ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER,
-]), validate(schemas.adjustMaterial), adjustMaterial);
-
-// Movement history
-router.get('/:id/movements', authorize([
-  ROLES.ADMIN, ROLES.MANAGER, ROLES.PRODUCTION_MANAGER,
-]), getMaterialMovements);
+// Bulk operations
+router.post('/bulk/finish', authorize(canWrite),  bulkMarkFinished);
+router.post('/bulk/delete', authorize(canDelete), bulkDelete);
 
 module.exports = router;

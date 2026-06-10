@@ -1,19 +1,20 @@
-const RawMaterial     = require('../models/RawMaterial');
+const RawMaterial      = require('../models/RawMaterial');
 const MaterialMovement = require('../models/MaterialMovement');
-const asyncHandler    = require('../utils/asyncHandler');
-const { AppError }    = require('../middleware/errorHandler');
-const { audit }       = require('../utils/audit');
-const { paginate }    = require('../utils/paginate');
+const asyncHandler     = require('../utils/asyncHandler');
+const { AppError }     = require('../middleware/errorHandler');
+const { audit }        = require('../utils/audit');
+const { paginate }     = require('../utils/paginate');
 const { MATERIAL_CATEGORIES } = require('../models/RawMaterial');
 
 // ─── Get all materials ────────────────────────────────────────────────────
 exports.getMaterials = asyncHandler(async (req, res) => {
-  const { page, limit, search, category, lowStock, isActive } = req.query;
+  const { page, limit, search, category, lowStock, isActive, isFinished } = req.query;
 
   const filter = { isDeleted: false };
-  if (category) filter.category = category;
-  if (isActive !== undefined) filter.isActive = isActive === 'true';
-  if (lowStock === 'true') {
+  if (category)   filter.category   = category;
+  if (isActive   !== undefined) filter.isActive   = isActive   === 'true';
+  if (isFinished !== undefined) filter.isFinished = isFinished === 'true';
+  if (lowStock   === 'true') {
     filter.$expr = { $lte: ['$currentQuantity', '$lowStockThreshold'] };
   }
   if (search) {
@@ -30,13 +31,13 @@ exports.getMaterials = asyncHandler(async (req, res) => {
     { path: 'createdBy', select: 'name' }
   );
 
-  // Summary per category
   const categorySummary = await RawMaterial.aggregate([
     { $match: { isDeleted: false, isActive: true } },
     {
       $group: {
-        _id:          '$category',
+        _id:            '$category',
         totalMaterials: { $sum: 1 },
+        finishedCount:  { $sum: { $cond: ['$isFinished', 1, 0] } },
         lowStockCount: {
           $sum: {
             $cond: [{ $lte: ['$currentQuantity', '$lowStockThreshold'] }, 1, 0],
@@ -56,25 +57,22 @@ exports.getMaterials = asyncHandler(async (req, res) => {
 // ─── Get materials grouped by category ───────────────────────────────────
 exports.getMaterialsByCategory = asyncHandler(async (req, res) => {
   const grouped = {};
-
   for (const cat of MATERIAL_CATEGORIES) {
-    const materials = await RawMaterial.find({
+    grouped[cat] = await RawMaterial.find({
       category:  cat,
       isDeleted: false,
       isActive:  true,
-    }).sort('name');
-    grouped[cat] = materials;
+    }).sort('isFinished name');
   }
-
   res.json({ success: true, data: grouped });
 });
 
 // ─── Get single material ──────────────────────────────────────────────────
 exports.getMaterialById = asyncHandler(async (req, res) => {
   const material = await RawMaterial.findOne({
-    _id:       req.params.id,
-    isDeleted: false,
-  }).populate('createdBy', 'name email');
+    _id: req.params.id, isDeleted: false,
+  }).populate('createdBy', 'name email')
+    .populate('finishedBy', 'name email');
 
   if (!material) throw new AppError('Material not found.', 404);
   res.json({ success: true, data: material });
@@ -94,14 +92,13 @@ exports.createMaterial = asyncHandler(async (req, res) => {
 
   const material = await RawMaterial.create({
     name, code, category, description, unit,
-    currentQuantity: currentQuantity || 0,
+    currentQuantity:   currentQuantity   || 0,
     lowStockThreshold: lowStockThreshold || 10,
-    unitCost: unitCost || 0,
+    unitCost:          unitCost          || 0,
     supplier,
     createdBy: req.user._id,
   });
 
-  // Log opening stock movement if quantity > 0
   if (material.currentQuantity > 0) {
     await MaterialMovement.create({
       material:       material._id,
@@ -138,7 +135,6 @@ exports.updateMaterial = asyncHandler(async (req, res) => {
     'unitCost', 'supplier', 'isActive', 'category',
   ];
 
-  // Track price change
   if (req.body.unitCost !== undefined &&
       req.body.unitCost !== material.unitCost) {
     material.priceHistory.push({
@@ -161,7 +157,7 @@ exports.updateMaterial = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Material updated.', data: material });
 });
 
-// ─── Delete material (soft) ───────────────────────────────────────────────
+// ─── Delete single material (soft) ───────────────────────────────────────
 exports.deleteMaterial = asyncHandler(async (req, res) => {
   const material = await RawMaterial.findOne({
     _id: req.params.id, isDeleted: false,
@@ -170,6 +166,7 @@ exports.deleteMaterial = asyncHandler(async (req, res) => {
 
   material.isDeleted = true;
   material.isActive  = false;
+  material.deletedAt = new Date();
   await material.save();
 
   await audit(req, {
@@ -178,28 +175,158 @@ exports.deleteMaterial = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Material deleted.' });
 });
 
-// ─── Adjust quantity (restock / damage / use) ────────────────────────────
-exports.adjustMaterial = asyncHandler(async (req, res) => {
-  const { type, quantity, unitCost, reference, notes, relatedProduct, batchQuantity } = req.body;
+// ─── Mark single material as finished ────────────────────────────────────
+exports.markAsFinished = asyncHandler(async (req, res) => {
+  const { note } = req.body;
+  const material = await RawMaterial.findOne({
+    _id: req.params.id, isDeleted: false,
+  });
+  if (!material) throw new AppError('Material not found.', 404);
+  if (material.isFinished) {
+    throw new AppError('Material is already marked as finished.', 400);
+  }
 
+  material.isFinished   = true;
+  material.finishedAt   = new Date();
+  material.finishedBy   = req.user._id;
+  material.finishedNote = note || null;
+  material.updatedBy    = req.user._id;
+  await material.save();
+
+  await audit(req, {
+    action: 'update', entity: 'RawMaterial', entityId: material._id,
+    meta:   { action: 'mark_finished', note },
+  });
+
+  res.json({
+    success: true,
+    message: `"${material.name}" marked as finished.`,
+    data:    material,
+  });
+});
+
+// ─── Unmark finished ──────────────────────────────────────────────────────
+exports.unmarkFinished = asyncHandler(async (req, res) => {
   const material = await RawMaterial.findOne({
     _id: req.params.id, isDeleted: false,
   });
   if (!material) throw new AppError('Material not found.', 404);
 
-  const outboundTypes = ['used_in_production', 'damage'];
-  const absQty        = Math.abs(quantity);
+  material.isFinished   = false;
+  material.finishedAt   = undefined;
+  material.finishedBy   = undefined;
+  material.finishedNote = undefined;
+  material.updatedBy    = req.user._id;
+  await material.save();
 
-  if (outboundTypes.includes(type) && material.currentQuantity < absQty) {
+  await audit(req, {
+    action: 'update', entity: 'RawMaterial', entityId: material._id,
+    meta:   { action: 'unmark_finished' },
+  });
+
+  res.json({
+    success: true,
+    message: `"${material.name}" unmarked as finished.`,
+    data:    material,
+  });
+});
+
+// ─── BULK: Mark multiple as finished ─────────────────────────────────────
+exports.bulkMarkFinished = asyncHandler(async (req, res) => {
+  const { ids, note } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new AppError('No material IDs provided.', 400);
+  }
+
+  const result = await RawMaterial.updateMany(
+    { _id: { $in: ids }, isDeleted: false, isFinished: false },
+    {
+      $set: {
+        isFinished:   true,
+        finishedAt:   new Date(),
+        finishedBy:   req.user._id,
+        finishedNote: note || null,
+        updatedBy:    req.user._id,
+        updatedAt:    new Date(),
+      },
+    }
+  );
+
+  await audit(req, {
+    action: 'update',
+    entity: 'RawMaterial',
+    meta:   { action: 'bulk_mark_finished', ids, count: result.modifiedCount },
+  });
+
+  res.json({
+    success: true,
+    message: `${result.modifiedCount} material(s) marked as finished.`,
+    data:    { modifiedCount: result.modifiedCount },
+  });
+});
+
+// ─── BULK: Delete multiple materials ─────────────────────────────────────
+exports.bulkDelete = asyncHandler(async (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new AppError('No material IDs provided.', 400);
+  }
+
+  const result = await RawMaterial.updateMany(
+    { _id: { $in: ids }, isDeleted: false },
+    {
+      $set: {
+        isDeleted: true,
+        isActive:  false,
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+      },
+    }
+  );
+
+  await audit(req, {
+    action: 'delete',
+    entity: 'RawMaterial',
+    meta:   { action: 'bulk_delete', ids, count: result.modifiedCount },
+  });
+
+  res.json({
+    success: true,
+    message: `${result.modifiedCount} material(s) deleted.`,
+    data:    { deletedCount: result.modifiedCount },
+  });
+});
+
+// ─── Adjust quantity ──────────────────────────────────────────────────────
+exports.adjustMaterial = asyncHandler(async (req, res) => {
+  const {
+    type, quantity, unitCost, reference,
+    notes, relatedProduct, batchQuantity,
+  } = req.body;
+
+  const material = await RawMaterial.findOne({
+    _id: req.params.id, isDeleted: false,
+  });
+  if (!material) throw new AppError('Material not found.', 404);
+  if (material.isFinished && type !== 'adjustment') {
+    throw new AppError(
+      'This material is marked as finished. Unmark it first to make changes.',
+      400
+    );
+  }
+
+  const outbound = ['used_in_production', 'damage'];
+  const absQty   = Math.abs(quantity);
+
+  if (outbound.includes(type) && material.currentQuantity < absQty) {
     throw new AppError(
       `Insufficient stock. Available: ${material.currentQuantity}, Requested: ${absQty}`,
       400
     );
   }
 
-  const quantityBefore = material.currentQuantity;
-
-  if (outboundTypes.includes(type)) {
+  const before = material.currentQuantity;
+  if (outbound.includes(type)) {
     material.currentQuantity -= absQty;
   } else {
     material.currentQuantity += absQty;
@@ -211,8 +338,8 @@ exports.adjustMaterial = asyncHandler(async (req, res) => {
   const movement = await MaterialMovement.create({
     material:       material._id,
     type,
-    quantity:       outboundTypes.includes(type) ? -absQty : absQty,
-    quantityBefore,
+    quantity:       outbound.includes(type) ? -absQty : absQty,
+    quantityBefore: before,
     quantityAfter:  material.currentQuantity,
     unitCost:       unitCost || material.unitCost,
     reference,
@@ -226,12 +353,7 @@ exports.adjustMaterial = asyncHandler(async (req, res) => {
     action:   'update',
     entity:   'RawMaterial',
     entityId: material._id,
-    meta: {
-      type,
-      quantity:  outboundTypes.includes(type) ? -absQty : absQty,
-      before:    quantityBefore,
-      after:     material.currentQuantity,
-    },
+    meta:     { type, quantity: outbound.includes(type) ? -absQty : absQty, before, after: material.currentQuantity },
   });
 
   res.json({
@@ -252,7 +374,7 @@ exports.getMaterialMovements = asyncHandler(async (req, res) => {
     filter,
     { page, limit, sort: '-createdAt' },
     [
-      { path: 'performedBy',   select: 'name email' },
+      { path: 'performedBy',    select: 'name email' },
       { path: 'relatedProduct', select: 'name sku' },
     ]
   );
@@ -260,11 +382,12 @@ exports.getMaterialMovements = asyncHandler(async (req, res) => {
   res.json({ success: true, ...result });
 });
 
-// ─── Production summary dashboard ────────────────────────────────────────
+// ─── Production summary ───────────────────────────────────────────────────
 exports.getProductionSummary = asyncHandler(async (req, res) => {
   const [
     totalMaterials,
     lowStockMaterials,
+    finishedMaterials,
     totalValue,
     recentUsage,
     categoryBreakdown,
@@ -272,24 +395,21 @@ exports.getProductionSummary = asyncHandler(async (req, res) => {
     RawMaterial.countDocuments({ isDeleted: false, isActive: true }),
 
     RawMaterial.countDocuments({
-      isDeleted: false,
-      isActive:  true,
+      isDeleted: false, isActive: true,
       $expr: { $lte: ['$currentQuantity', '$lowStockThreshold'] },
+    }),
+
+    RawMaterial.countDocuments({
+      isDeleted: false, isFinished: true,
     }),
 
     RawMaterial.aggregate([
       { $match: { isDeleted: false, isActive: true } },
-      {
-        $group: {
-          _id:   null,
-          total: { $sum: { $multiply: ['$currentQuantity', '$unitCost'] } },
-        },
-      },
+      { $group: { _id: null, total: { $sum: { $multiply: ['$currentQuantity', '$unitCost'] } } } },
     ]),
 
     MaterialMovement.find({ type: 'used_in_production' })
-      .sort('-createdAt')
-      .limit(10)
+      .sort('-createdAt').limit(10)
       .populate('material',       'name code category')
       .populate('relatedProduct', 'name sku')
       .populate('performedBy',    'name'),
@@ -300,14 +420,11 @@ exports.getProductionSummary = asyncHandler(async (req, res) => {
         $group: {
           _id:           '$category',
           count:         { $sum: 1 },
+          finishedCount: { $sum: { $cond: ['$isFinished', 1, 0] } },
           totalQty:      { $sum: '$currentQuantity' },
           totalValue:    { $sum: { $multiply: ['$currentQuantity', '$unitCost'] } },
           lowStockCount: {
-            $sum: {
-              $cond: [
-                { $lte: ['$currentQuantity', '$lowStockThreshold'] }, 1, 0,
-              ],
-            },
+            $sum: { $cond: [{ $lte: ['$currentQuantity', '$lowStockThreshold'] }, 1, 0] },
           },
         },
       },
@@ -320,6 +437,7 @@ exports.getProductionSummary = asyncHandler(async (req, res) => {
     data: {
       totalMaterials,
       lowStockMaterials,
+      finishedMaterials,
       totalInventoryValue: totalValue[0]?.total || 0,
       recentUsage,
       categoryBreakdown,

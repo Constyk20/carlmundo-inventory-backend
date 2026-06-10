@@ -22,13 +22,11 @@ const priceHistorySchema = new mongoose.Schema(
 
 const rawMaterialSchema = new mongoose.Schema(
   {
-    // e.g. "10\" Low Cover", "PVC Sheet", "8\" Body"
     name: {
       type:     String,
       required: [true, 'Material name is required'],
       trim:     true,
     },
-    // short code e.g. "10LC", "PVC-A4"
     code: {
       type:      String,
       unique:    true,
@@ -46,26 +44,29 @@ const rawMaterialSchema = new mongoose.Schema(
       enum:    ['piece', 'pack', 'sheet', 'roll', 'kg', 'litre', 'metre'],
       default: 'piece',
     },
-    // Current quantity in stock
-    currentQuantity: { type: Number, default: 0, min: 0 },
+    currentQuantity:   { type: Number, default: 0, min: 0 },
     lowStockThreshold: { type: Number, default: 10 },
-    // Cost per unit
-    unitCost: { type: Number, default: 0, min: 0 },
-    priceHistory: [priceHistorySchema],
+    unitCost:          { type: Number, default: 0, min: 0 },
+    priceHistory:      [priceHistorySchema],
     supplier: {
       name:         { type: String },
       contactPhone: { type: String },
       contactEmail: { type: String },
     },
-    isActive:  { type: Boolean, default: true },
-    isDeleted: { type: Boolean, default: false },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Marks this material as finished/converted into product
+    isFinished:   { type: Boolean, default: false },
+    finishedAt:   { type: Date },
+    finishedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    finishedNote: { type: String },
+    isActive:     { type: Boolean, default: true },
+    isDeleted:    { type: Boolean, default: false },
+    deletedAt:    { type: Date },
+    createdBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );
 
-// Auto-generate code if not provided
 rawMaterialSchema.pre('save', async function (next) {
   if (!this.code) {
     const count = await mongoose.model('RawMaterial').countDocuments();
@@ -79,7 +80,8 @@ rawMaterialSchema.virtual('isLowStock').get(function () {
   return this.currentQuantity <= this.lowStockThreshold;
 });
 
-rawMaterialSchema.index({ category: 1, isActive: 1 });
+rawMaterialSchema.index({ category: 1, isActive: 1, isDeleted: 1 });
+rawMaterialSchema.index({ isFinished: 1 });
 rawMaterialSchema.index({ name: 'text', code: 'text' });
 
 module.exports = mongoose.model('RawMaterial', rawMaterialSchema);
