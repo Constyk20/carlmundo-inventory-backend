@@ -27,7 +27,7 @@ const registrationRequestSchema = new mongoose.Schema(
     requestedRole: {
       type:    String,
       enum:    Object.values(ROLES).filter((r) => r !== 'admin'),
-      default: ROLES.STAFF,
+      default: ROLES.SUPERVISOR,
     },
     reason: {
       type:      String,

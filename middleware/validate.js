@@ -21,7 +21,7 @@ const schemas = {
     name: Joi.string().min(2).max(100).required().trim(),
     email: Joi.string().email().required().lowercase(),
     password: password.required(),
-    role: Joi.string().valid(...Object.values(ROLES)).default(ROLES.STAFF),
+    role: Joi.string().valid(...Object.values(ROLES)).default(ROLES.SUPERVISOR),
     permissions: Joi.array().items(Joi.string().valid(...Object.values(PERMISSIONS))),
   }),
 
@@ -182,12 +182,12 @@ const schemas = {
     .required(),
   phone:         Joi.string().trim().allow('', null),
   requestedRole: Joi.string()
-    .valid('manager', 'production_manager', 'accountant', 'staff', 'viewer')
-    .default('staff'),
+    .valid('manager', 'production_manager', 'accountant', 'supervisor', 'viewer')
+    .default('supervisor'),
   reason:        Joi.string().max(500).trim().allow('', null),
 }),
   approveRegistrationRequest: Joi.object({
-    role:        Joi.string().valid('manager', 'production_manager', 'accountant', 'staff', 'viewer'),
+    role:        Joi.string().valid('manager', 'production_manager', 'accountant', 'supervisor', 'viewer'),
     permissions: Joi.array().items(Joi.string()),
   }),
 

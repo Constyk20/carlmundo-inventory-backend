@@ -33,7 +33,7 @@ exports.submitRequest = asyncHandler(async (req, res) => {
     email,
     password,
     phone,
-    requestedRole: requestedRole || ROLES.STAFF,
+    requestedRole: requestedRole || ROLES.SUPERVISOR,
     reason,
   });
 
@@ -45,7 +45,7 @@ exports.submitRequest = asyncHandler(async (req, res) => {
   if (admins.length > 0) {
     await Notification.create({
       title:   'New Registration Request',
-      message: `${name} (${email}) has requested access as ${requestedRole || 'staff'}.`,
+      message: `${name} (${email}) has requested access as ${requestedRole || 'supervisor'}.`,
       type:    'info',
       recipients: admins.map((a) => a._id),
       link:    '/admin/registration-requests',
