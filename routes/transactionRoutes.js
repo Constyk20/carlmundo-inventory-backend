@@ -1,18 +1,34 @@
 const express = require('express');
-const router = express.Router();
+const router  = express.Router();
 const {
-  createTransaction, getTransactions, getTransactionById, cancelTransaction,
+  getTransactions,
+  getById,
+  createTransaction,
+  recordPayment,
+  markAsPaid,
+  cancelTransaction,
 } = require('../controllers/transactionController');
-const { protect } = require('../middleware/auth');
-const { requirePermission } = require('../middleware/rbac');
+const { protect }           = require('../middleware/auth');
+const { authorize }         = require('../middleware/rbac');
 const { validate, schemas } = require('../middleware/validate');
-const { PERMISSIONS } = require('../config/constants');
+const { ROLES }             = require('../config/constants');
 
 router.use(protect);
 
-router.get('/',          requirePermission(PERMISSIONS.TRANSACTIONS_READ),   getTransactions);
-router.get('/:id',       requirePermission(PERMISSIONS.TRANSACTIONS_READ),   getTransactionById);
-router.post('/',         requirePermission(PERMISSIONS.TRANSACTIONS_WRITE),  validate(schemas.createTransaction), createTransaction);
-router.put('/:id/cancel', requirePermission(PERMISSIONS.TRANSACTIONS_DELETE), cancelTransaction);
+const canView  = [ROLES.ADMIN, ROLES.MANAGER, ROLES.ACCOUNTANT, ROLES.STAFF];
+const canWrite = [ROLES.ADMIN, ROLES.MANAGER, ROLES.STAFF];
+const canDelete = [ROLES.ADMIN, ROLES.MANAGER];
+
+router.get('/',    authorize(canView),  getTransactions);
+router.get('/:id', authorize(canView),  getById);
+
+router.post('/',   authorize(canWrite), createTransaction);
+
+// Payment routes
+router.post('/:id/payment',  authorize(canWrite), recordPayment);
+router.put('/:id/mark-paid', authorize(canWrite), markAsPaid);
+
+// Cancel
+router.put('/:id/cancel', authorize(canDelete), cancelTransaction);
 
 module.exports = router;
