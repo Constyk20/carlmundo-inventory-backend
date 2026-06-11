@@ -1,65 +1,71 @@
 const mongoose = require('mongoose');
 
+const paymentHistorySchema = new mongoose.Schema(
+  {
+    amount:        { type: Number, required: true },
+    paymentMethod: { type: String },
+    notes:         { type: String },
+    recordedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    recordedAt:    { type: Date, default: Date.now },
+    balanceBefore: { type: Number },
+    balanceAfter:  { type: Number },
+  },
+  { _id: true }
+);
+
 const transactionItemSchema = new mongoose.Schema(
   {
-    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-    productName: { type: String }, // denormalized
-    productSku: { type: String },  // denormalized
-    quantity: { type: Number, required: true, min: 1 },
-    unitPrice: { type: Number, required: true, min: 0 },
-    discount: { type: Number, default: 0, min: 0 }, // percentage
-    subtotal: { type: Number, required: true },
+    product:     { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    productName: { type: String, required: true },
+    productSku:  { type: String },
+    quantity:    { type: Number, required: true, min: 1 },
+    unitPrice:   { type: Number, required: true, min: 0 },
+    discount:    { type: Number, default: 0, min: 0, max: 100 },
+    subtotal:    { type: Number, required: true },
   },
-  { _id: false }
+  { _id: true }
 );
 
 const transactionSchema = new mongoose.Schema(
   {
     invoiceNumber: {
-      type: String,
+      type:   String,
       unique: true,
-      uppercase: true,
     },
-    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
-    customerName: { type: String }, // denormalized for walk-in customers
+    customer:      { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
+    customerName:  { type: String },
     type: {
-      type: String,
-      enum: ['sale', 'return', 'quotation'],
+      type:    String,
+      enum:    ['sale', 'return', 'exchange'],
       default: 'sale',
     },
     status: {
-      type: String,
-      enum: ['draft', 'confirmed', 'delivered', 'cancelled', 'refunded'],
+      type:    String,
+      enum:    ['draft', 'confirmed', 'cancelled'],
       default: 'confirmed',
     },
-    items: {
-      type: [transactionItemSchema],
-      validate: [(v) => v.length > 0, 'At least one item is required'],
-    },
-    subtotal: { type: Number, required: true },
-    discountAmount: { type: Number, default: 0 },
-    taxRate: { type: Number, default: 0 },    // percentage
-    taxAmount: { type: Number, default: 0 },
-    total: { type: Number, required: true },
-    amountPaid: { type: Number, default: 0 },
-    balance: { type: Number, default: 0 },
+    items:         [transactionItemSchema],
+    subtotal:      { type: Number, required: true, min: 0 },
+    taxRate:       { type: Number, default: 0, min: 0, max: 100 },
+    taxAmount:     { type: Number, default: 0, min: 0 },
+    total:         { type: Number, required: true, min: 0 },
+    amountPaid:    { type: Number, default: 0, min: 0 },
+    balance:       { type: Number, default: 0, min: 0 },
     paymentMethod: {
-      type: String,
-      enum: ['cash', 'transfer', 'cheque', 'credit', 'pos'],
+      type:    String,
+      enum:    ['cash', 'transfer', 'cheque', 'credit', 'pos', 'card'],
       default: 'cash',
     },
     paymentStatus: {
-      type: String,
-      enum: ['unpaid', 'partial', 'paid'],
+      type:    String,
+      enum:    ['paid', 'partial', 'unpaid'],
       default: 'paid',
     },
-    notes: { type: String },
-    dueDate: { type: Date },
-    deliveryDate: { type: Date },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    cancelReason: { type: String },
+    paymentHistory: [paymentHistorySchema],
+    notes:     { type: String },
+    dueDate:   { type: Date },
+    isDeleted: { type: Boolean, default: false },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );
@@ -67,18 +73,19 @@ const transactionSchema = new mongoose.Schema(
 // Auto-generate invoice number
 transactionSchema.pre('save', async function (next) {
   if (!this.invoiceNumber) {
-    const now = new Date();
-    const year = now.getFullYear().toString().slice(-2);
-    const month = String(now.getMonth() + 1).padStart(2, '0');
     const count = await mongoose.model('Transaction').countDocuments();
-    this.invoiceNumber = `INV-${year}${month}-${String(count + 1).padStart(5, '0')}`;
+    const pad   = String(count + 1).padStart(5, '0');
+    const year  = new Date().getFullYear().toString().slice(-2);
+    this.invoiceNumber = `INV-${year}-${pad}`;
   }
   next();
 });
 
-// invoiceNumber index created by unique:true above
 transactionSchema.index({ customer: 1, createdAt: -1 });
-transactionSchema.index({ status: 1, paymentStatus: 1 });
+transactionSchema.index({ paymentStatus: 1 });
+transactionSchema.index({ status: 1 });
+transactionSchema.index({ balance: 1 });
 transactionSchema.index({ createdAt: -1 });
+transactionSchema.index({ invoiceNumber: 1 });
 
 module.exports = mongoose.model('Transaction', transactionSchema);
