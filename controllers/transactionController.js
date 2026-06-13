@@ -61,9 +61,15 @@ exports.getTransactions = asyncHandler(async (req, res) => {
     ]
   );
 
-  // Summary totals for current filter
+  // Summary totals for current filter (excluding cancelled)
   const summary = await Transaction.aggregate([
-    { $match: { ...filter, status: { $ne: 'cancelled' } } },
+    { 
+      $match: { 
+        ...filter, 
+        status: { $ne: 'cancelled' },
+        isDeleted: { $ne: true }
+      } 
+    },
     {
       $group: {
         _id:            null,
@@ -379,9 +385,23 @@ exports.cancelTransaction = asyncHandler(async (req, res) => {
         { $inc: { currentStock: item.quantity } },
         { session }
       );
+
+      // Log stock movement for cancellation
+      const product = await Product.findById(item.product).session(session);
+      if (product) {
+        await StockMovement.create([{
+          product:        product._id,
+          type:           'cancellation',
+          quantity:       item.quantity,
+          quantityBefore: product.currentStock - item.quantity,
+          quantityAfter:  product.currentStock,
+          reference:      `Cancelled transaction ${transaction.invoiceNumber}`,
+          performedBy:    req.user._id,
+        }], { session });
+      }
     }
 
-    // Restore customer balance
+    // Restore customer balance if there was an outstanding balance
     if (transaction.customer && transaction.balance > 0) {
       await Customer.findByIdAndUpdate(
         transaction.customer,
@@ -390,20 +410,128 @@ exports.cancelTransaction = asyncHandler(async (req, res) => {
       );
     }
 
+    // If customer had paid partially, we might need to handle refund
+    // For now, we're just clearing the balance
+    if (transaction.customer && transaction.amountPaid > 0) {
+      await Customer.findByIdAndUpdate(
+        transaction.customer,
+        { $inc: { totalPurchases: -1, totalSpent: -transaction.amountPaid } },
+        { session }
+      );
+    }
+
+    // Update transaction status
+    const cancellationNote = reason 
+      ? `Cancelled: ${reason}`
+      : 'Cancelled';
+    
     transaction.status = 'cancelled';
-    transaction.notes  = transaction.notes
-      ? `${transaction.notes} | Cancelled: ${reason}`
-      : `Cancelled: ${reason}`;
+    transaction.paymentStatus = 'cancelled'; // Set payment status to cancelled
+    transaction.amountPaid = 0; // Reset paid amount
+    transaction.balance = 0; // Clear balance
+    transaction.notes = transaction.notes
+      ? `${transaction.notes} | ${cancellationNote}`
+      : cancellationNote;
+
+    // Add cancellation to payment history
+    if (!transaction.paymentHistory) transaction.paymentHistory = [];
+    transaction.paymentHistory.push({
+      amount:        0,
+      paymentMethod: 'cancellation',
+      notes:         cancellationNote,
+      recordedBy:    req.user._id,
+      recordedAt:    new Date(),
+      balanceBefore: transaction.balance,
+      balanceAfter:  0,
+    });
+
     await transaction.save({ session });
 
     await session.commitTransaction();
 
     await audit(req, {
-      action: 'update', entity: 'Transaction', entityId: transaction._id,
-      meta: { action: 'cancelled', reason },
+      action: 'update', 
+      entity: 'Transaction', 
+      entityId: transaction._id,
+      meta: { 
+        action: 'cancelled', 
+        reason,
+        previousStatus: transaction.status,
+        previousPaymentStatus: transaction.paymentStatus
+      },
     });
 
-    res.json({ success: true, message: 'Transaction cancelled.', data: transaction });
+    res.json({ 
+      success: true, 
+      message: 'Transaction cancelled successfully.',
+      data: transaction 
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    session.endSession();
+  }
+});
+
+// ─── Reactivate cancelled transaction ─────────────────────────────────────
+exports.reactivateTransaction = asyncHandler(async (req, res) => {
+  const transaction = await Transaction.findById(req.params.id);
+  if (!transaction) throw new AppError('Transaction not found.', 404);
+  if (transaction.status !== 'cancelled') {
+    throw new AppError('Only cancelled transactions can be reactivated.', 400);
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // Re-deduct stock
+    for (const item of transaction.items) {
+      const product = await Product.findById(item.product).session(session);
+      if (!product) {
+        throw new AppError(`Product ${item.productName} no longer exists.`, 404);
+      }
+      if (product.currentStock < item.quantity) {
+        throw new AppError(
+          `Insufficient stock for "${product.name}". Available: ${product.currentStock}, Required: ${item.quantity}`,
+          400
+        );
+      }
+
+      await Product.findByIdAndUpdate(
+        product._id,
+        { $inc: { currentStock: -item.quantity } },
+        { session }
+      );
+    }
+
+    // Reset payment calculations
+    transaction.status = 'confirmed';
+    transaction.paymentStatus = 'unpaid';
+    transaction.amountPaid = 0;
+    transaction.balance = transaction.total;
+    transaction.notes = transaction.notes
+      ? `${transaction.notes} | Reactivated`
+      : 'Reactivated';
+
+    // Update customer balance
+    if (transaction.customer && transaction.balance > 0) {
+      await Customer.findByIdAndUpdate(
+        transaction.customer,
+        { $inc: { currentBalance: transaction.balance } },
+        { session }
+      );
+    }
+
+    await transaction.save({ session });
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      message: 'Transaction reactivated successfully.',
+      data: transaction,
+    });
   } catch (err) {
     await session.abortTransaction();
     throw err;

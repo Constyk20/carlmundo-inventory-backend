@@ -53,12 +53,12 @@ const transactionSchema = new mongoose.Schema(
     balance:       { type: Number, default: 0, min: 0 },
     paymentMethod: {
       type:    String,
-      enum:    ['cash', 'transfer', 'cheque', 'credit', 'pos', 'card'],
+      enum:    ['cash', 'transfer', 'cheque', 'credit', 'pos', 'card', 'cancellation'],
       default: 'cash',
     },
     paymentStatus: {
       type:    String,
-      enum:    ['paid', 'partial', 'unpaid'],
+      enum:    ['paid', 'partial', 'unpaid', 'cancelled'], // Added 'cancelled'
       default: 'paid',
     },
     paymentHistory: [paymentHistorySchema],
